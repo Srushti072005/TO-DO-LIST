@@ -1,0 +1,462 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+from datetime import datetime, date
+import json
+import os
+from enum import Enum
+
+class Priority(Enum):
+    LOW = "Low"
+    MEDIUM = "Medium"
+    HIGH = "High"
+
+class TaskStatus(Enum):
+    PENDING = "Pending"
+    COMPLETED = "Completed"
+
+class Task:
+    def _init_(self, title, description="", priority=Priority.MEDIUM, due_date=None):
+        self.id = datetime.now().timestamp()
+        self.title = title
+        self.description = description
+        self.priority = priority
+        self.due_date = due_date
+        self.status = TaskStatus.PENDING
+        self.created_at = datetime.now()
+        self.completed_at = None
+    
+    def mark_completed(self):
+        self.status = TaskStatus.COMPLETED
+        self.completed_at = datetime.now()
+    
+    def mark_pending(self):
+        self.status = TaskStatus.PENDING
+        self.completed_at = None
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'priority': self.priority.value,
+            'due_date': self.due_date.isoformat() if self.due_date else None,
+            'status': self.status.value,
+            'created_at': self.created_at.isoformat(),
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        task = cls(data['title'], data['description'], Priority(data['priority']))
+        task.id = data['id']
+        task.due_date = datetime.fromisoformat(data['due_date']).date() if data['due_date'] else None
+        task.status = TaskStatus(data['status'])
+        task.created_at = datetime.fromisoformat(data['created_at'])
+        task.completed_at = datetime.fromisoformat(data['completed_at']) if data['completed_at'] else None
+        return task
+
+class TodoApp:
+    def _init_(self, root):
+        self.root = root
+        self.root.title("Advanced To-Do List Manager")
+        self.root.geometry("1000x700")
+        self.root.configure(bg='#f0f0f0')
+        
+        self.tasks = []
+        self.filtered_tasks = []
+        self.data_file = "tasks.json"
+        
+        self.setup_styles()
+        self.create_widgets()
+        self.load_tasks()
+        self.refresh_task_list()
+    
+    def setup_styles(self):
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Configure styles
+        style.configure('Title.TLabel', font=('Arial', 16, 'bold'), background='#f0f0f0')
+        style.configure('Header.TLabel', font=('Arial', 12, 'bold'), background='#f0f0f0')
+        style.configure('Priority.High.TLabel', foreground='#d32f2f')
+        style.configure('Priority.Medium.TLabel', foreground='#f57c00')
+        style.configure('Priority.Low.TLabel', foreground='#388e3c')
+    
+    def create_widgets(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Configure grid weights
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(2, weight=1)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="📝 Advanced To-Do List Manager", style='Title.TLabel')
+        title_label.grid(row=0, column=0, columnspan=2, pady=(0, 20))
+        
+        # Left panel - Task input and controls
+        left_frame = ttk.LabelFrame(main_frame, text="Task Management", padding="10")
+        left_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
+        
+        # Task input fields
+        ttk.Label(left_frame, text="Task Title:", style='Header.TLabel').grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.title_entry = ttk.Entry(left_frame, width=30, font=('Arial', 10))
+        self.title_entry.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        
+        ttk.Label(left_frame, text="Description:", style='Header.TLabel').grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.description_text = tk.Text(left_frame, width=30, height=4, font=('Arial', 10))
+        self.description_text.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        
+        ttk.Label(left_frame, text="Priority:", style='Header.TLabel').grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.priority_var = tk.StringVar(value=Priority.MEDIUM.value)
+        priority_combo = ttk.Combobox(left_frame, textvariable=self.priority_var, 
+                                    values=[p.value for p in Priority], state="readonly")
+        priority_combo.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        
+        ttk.Label(left_frame, text="Due Date (YYYY-MM-DD):", style='Header.TLabel').grid(row=6, column=0, sticky=tk.W, pady=5)
+        self.due_date_entry = ttk.Entry(left_frame, width=30, font=('Arial', 10))
+        self.due_date_entry.grid(row=7, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        
+        # Buttons
+        button_frame = ttk.Frame(left_frame)
+        button_frame.grid(row=8, column=0, columnspan=2, pady=20)
+        
+        add_btn = ttk.Button(button_frame, text="➕ Add Task", command=self.add_task)
+        add_btn.grid(row=0, column=0, padx=5)
+        
+        update_btn = ttk.Button(button_frame, text="✏ Update Task", command=self.update_task)
+        update_btn.grid(row=0, column=1, padx=5)
+        
+        delete_btn = ttk.Button(button_frame, text="🗑 Delete Task", command=self.delete_task)
+        delete_btn.grid(row=1, column=0, padx=5, pady=5)
+        
+        clear_btn = ttk.Button(button_frame, text="🧹 Clear Form", command=self.clear_form)
+        clear_btn.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Statistics
+        stats_frame = ttk.LabelFrame(left_frame, text="Statistics", padding="10")
+        stats_frame.grid(row=9, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
+        
+        self.stats_label = ttk.Label(stats_frame, text="", font=('Arial', 10))
+        self.stats_label.grid(row=0, column=0, sticky=tk.W)
+        
+        # Right panel - Task list and filters
+        right_frame = ttk.LabelFrame(main_frame, text="Task List", padding="10")
+        right_frame.grid(row=1, column=1, rowspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        right_frame.columnconfigure(0, weight=1)
+        right_frame.rowconfigure(2, weight=1)
+        
+        # Filter controls
+        filter_frame = ttk.Frame(right_frame)
+        filter_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        filter_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(filter_frame, text="Filter:").grid(row=0, column=0, padx=(0, 5))
+        self.filter_var = tk.StringVar(value="All")
+        filter_combo = ttk.Combobox(filter_frame, textvariable=self.filter_var,
+                                   values=["All", "Pending", "Completed", "High Priority", "Due Today"],
+                                   state="readonly", width=15)
+        filter_combo.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=5)
+        filter_combo.bind('<<ComboboxSelected>>', lambda e: self.refresh_task_list())
+        
+        search_btn = ttk.Button(filter_frame, text="🔍 Search", command=self.search_tasks)
+        search_btn.grid(row=0, column=2, padx=5)
+        
+        # Task list with scrollbar
+        list_frame = ttk.Frame(right_frame)
+        list_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        
+        # Treeview for task list
+        columns = ('Title', 'Priority', 'Due Date', 'Status')
+        self.task_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+        
+        # Configure columns
+        self.task_tree.heading('Title', text='Task Title')
+        self.task_tree.heading('Priority', text='Priority')
+        self.task_tree.heading('Due Date', text='Due Date')
+        self.task_tree.heading('Status', text='Status')
+        
+        self.task_tree.column('Title', width=300)
+        self.task_tree.column('Priority', width=100)
+        self.task_tree.column('Due Date', width=100)
+        self.task_tree.column('Status', width=100)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.task_tree.yview)
+        self.task_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.task_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # Bind events
+        self.task_tree.bind('<Double-1>', self.on_task_select)
+        self.task_tree.bind('<Button-3>', self.show_context_menu)
+        
+        # Task action buttons
+        action_frame = ttk.Frame(right_frame)
+        action_frame.grid(row=3, column=0, pady=10)
+        
+        complete_btn = ttk.Button(action_frame, text="✅ Mark Complete", command=self.toggle_task_status)
+        complete_btn.grid(row=0, column=0, padx=5)
+        
+        view_btn = ttk.Button(action_frame, text="👁 View Details", command=self.view_task_details)
+        view_btn.grid(row=0, column=1, padx=5)
+        
+        # Context menu
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Mark Complete/Pending", command=self.toggle_task_status)
+        self.context_menu.add_command(label="Edit Task", command=self.edit_selected_task)
+        self.context_menu.add_command(label="Delete Task", command=self.delete_task)
+        self.context_menu.add_command(label="View Details", command=self.view_task_details)
+        
+        # Bind Enter key to add task
+        self.root.bind('<Return>', lambda e: self.add_task())
+    
+    def add_task(self):
+        title = self.title_entry.get().strip()
+        if not title:
+            messagebox.showwarning("Warning", "Please enter a task title!")
+            return
+        
+        description = self.description_text.get("1.0", tk.END).strip()
+        priority = Priority(self.priority_var.get())
+        
+        due_date = None
+        due_date_str = self.due_date_entry.get().strip()
+        if due_date_str:
+            try:
+                due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                messagebox.showerror("Error", "Invalid date format! Use YYYY-MM-DD")
+                return
+        
+        task = Task(title, description, priority, due_date)
+        self.tasks.append(task)
+        self.save_tasks()
+        self.refresh_task_list()
+        self.clear_form()
+        messagebox.showinfo("Success", "Task added successfully!")
+    
+    def update_task(self):
+        selection = self.task_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a task to update!")
+            return
+        
+        task_id = float(self.task_tree.item(selection[0])['values'][0])
+        task = next((t for t in self.tasks if t.id == task_id), None)
+        
+        if task:
+            title = self.title_entry.get().strip()
+            if not title:
+                messagebox.showwarning("Warning", "Please enter a task title!")
+                return
+            
+            task.title = title
+            task.description = self.description_text.get("1.0", tk.END).strip()
+            task.priority = Priority(self.priority_var.get())
+            
+            due_date_str = self.due_date_entry.get().strip()
+            if due_date_str:
+                try:
+                    task.due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    messagebox.showerror("Error", "Invalid date format! Use YYYY-MM-DD")
+                    return
+            else:
+                task.due_date = None
+            
+            self.save_tasks()
+            self.refresh_task_list()
+            self.clear_form()
+            messagebox.showinfo("Success", "Task updated successfully!")
+    
+    def delete_task(self):
+        selection = self.task_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a task to delete!")
+            return
+        
+        if messagebox.askyesno("Confirm", "Are you sure you want to delete this task?"):
+            task_id = float(self.task_tree.item(selection[0])['values'][0])
+            self.tasks = [t for t in self.tasks if t.id != task_id]
+            self.save_tasks()
+            self.refresh_task_list()
+            messagebox.showinfo("Success", "Task deleted successfully!")
+    
+    def toggle_task_status(self):
+        selection = self.task_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a task!")
+            return
+        
+        task_id = float(self.task_tree.item(selection[0])['values'][0])
+        task = next((t for t in self.tasks if t.id == task_id), None)
+        
+        if task:
+            if task.status == TaskStatus.PENDING:
+                task.mark_completed()
+            else:
+                task.mark_pending()
+            
+            self.save_tasks()
+            self.refresh_task_list()
+    
+    def on_task_select(self, event):
+        selection = self.task_tree.selection()
+        if selection:
+            task_id = float(self.task_tree.item(selection[0])['values'][0])
+            task = next((t for t in self.tasks if t.id == task_id), None)
+            
+            if task:
+                self.title_entry.delete(0, tk.END)
+                self.title_entry.insert(0, task.title)
+                
+                self.description_text.delete("1.0", tk.END)
+                self.description_text.insert("1.0", task.description)
+                
+                self.priority_var.set(task.priority.value)
+                
+                self.due_date_entry.delete(0, tk.END)
+                if task.due_date:
+                    self.due_date_entry.insert(0, task.due_date.strftime("%Y-%m-%d"))
+    
+    def edit_selected_task(self):
+        self.on_task_select(None)
+    
+    def show_context_menu(self, event):
+        selection = self.task_tree.selection()
+        if selection:
+            self.context_menu.post(event.x_root, event.y_root)
+    
+    def view_task_details(self):
+        selection = self.task_tree.selection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a task!")
+            return
+        
+        task_id = float(self.task_tree.item(selection[0])['values'][0])
+        task = next((t for t in self.tasks if t.id == task_id), None)
+        
+        if task:
+            details = f"""Task Details:
+            
+Title: {task.title}
+Description: {task.description or 'No description'}
+Priority: {task.priority.value}
+Due Date: {task.due_date.strftime('%Y-%m-%d') if task.due_date else 'No due date'}
+Status: {task.status.value}
+Created: {task.created_at.strftime('%Y-%m-%d %H:%M')}
+Completed: {task.completed_at.strftime('%Y-%m-%d %H:%M') if task.completed_at else 'Not completed'}"""
+            
+            messagebox.showinfo("Task Details", details)
+    
+    def search_tasks(self):
+        query = simpledialog.askstring("Search", "Enter search term:")
+        if query:
+            query = query.lower()
+            self.filtered_tasks = [t for t in self.tasks 
+                                 if query in t.title.lower() or query in t.description.lower()]
+            self.update_task_display()
+    
+    def clear_form(self):
+        self.title_entry.delete(0, tk.END)
+        self.description_text.delete("1.0", tk.END)
+        self.priority_var.set(Priority.MEDIUM.value)
+        self.due_date_entry.delete(0, tk.END)
+    
+    def refresh_task_list(self):
+        filter_value = self.filter_var.get()
+        
+        if filter_value == "All":
+            self.filtered_tasks = self.tasks.copy()
+        elif filter_value == "Pending":
+            self.filtered_tasks = [t for t in self.tasks if t.status == TaskStatus.PENDING]
+        elif filter_value == "Completed":
+            self.filtered_tasks = [t for t in self.tasks if t.status == TaskStatus.COMPLETED]
+        elif filter_value == "High Priority":
+            self.filtered_tasks = [t for t in self.tasks if t.priority == Priority.HIGH]
+        elif filter_value == "Due Today":
+            today = date.today()
+            self.filtered_tasks = [t for t in self.tasks if t.due_date == today]
+        
+        self.update_task_display()
+        self.update_statistics()
+    
+    def update_task_display(self):
+        # Clear existing items
+        for item in self.task_tree.get_children():
+            self.task_tree.delete(item)
+        
+        # Sort tasks by priority and due date
+        sorted_tasks = sorted(self.filtered_tasks, 
+                            key=lambda t: (t.status.value, 
+                                         {'High': 0, 'Medium': 1, 'Low': 2}[t.priority.value],
+                                         t.due_date or date.max))
+        
+        for task in sorted_tasks:
+            due_date_str = task.due_date.strftime('%Y-%m-%d') if task.due_date else ''
+            
+            # Add color coding for overdue tasks
+            tags = []
+            if task.due_date and task.due_date < date.today() and task.status == TaskStatus.PENDING:
+                tags.append('overdue')
+            elif task.status == TaskStatus.COMPLETED:
+                tags.append('completed')
+            
+            self.task_tree.insert('', tk.END, 
+                                values=(task.id, task.title, task.priority.value, 
+                                       due_date_str, task.status.value),
+                                tags=tags)
+        
+        # Configure tags
+        self.task_tree.tag_configure('overdue', background='#ffebee')
+        self.task_tree.tag_configure('completed', background='#e8f5e8')
+    
+    def update_statistics(self):
+        total_tasks = len(self.tasks)
+        completed_tasks = len([t for t in self.tasks if t.status == TaskStatus.COMPLETED])
+        pending_tasks = total_tasks - completed_tasks
+        overdue_tasks = len([t for t in self.tasks 
+                           if t.due_date and t.due_date < date.today() 
+                           and t.status == TaskStatus.PENDING])
+        
+        completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
+        
+        stats_text = f"""Total Tasks: {total_tasks}
+Completed: {completed_tasks}
+Pending: {pending_tasks}
+Overdue: {overdue_tasks}
+Completion Rate: {completion_rate:.1f}%"""
+        
+        self.stats_label.config(text=stats_text)
+    
+    def save_tasks(self):
+        try:
+            with open(self.data_file, 'w') as f:
+                json.dump([task.to_dict() for task in self.tasks], f, indent=2)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save tasks: {str(e)}")
+    
+    def load_tasks(self):
+        if os.path.exists(self.data_file):
+            try:
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    self.tasks = [Task.from_dict(task_data) for task_data in data]
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load tasks: {str(e)}")
+                self.tasks = []
+
+def main():
+    root = tk.Tk()
+    app = TodoApp(root)
+    root.mainloop()
+
+if _name_ == "_main_":
+    main()
